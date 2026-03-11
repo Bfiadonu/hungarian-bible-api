@@ -92,48 +92,9 @@ class VerseParser(HTMLParser):
         self.current_verse_num = None
         self.capture_text = False
         self.current_text = []
-        self.in_content = False
+        self.done = False
 
-    def handle_starttag(self, tag, attrs):
-        attrs_dict = dict(attrs)
-        # Verse links look like: <a href="verse.php?version=efo&book=...&verse=N">N</a>
-        if tag == "a" and "href" in attrs_dict:
-            href = attrs_dict["href"]
-            if "verse.php?" in href and "version=efo" in href:
-                # Extract verse number from href
-                m = re.search(r'verse=(\d+)', href)
-                if m:
-                    # Save previous verse if any
-                    if self.current_verse_num is not None and self.current_text:
-                        text = " ".join(self.current_text).strip()
-                        text = re.sub(r'\s+', ' ', text)
-                        if text:
-                            self.verses.append({
-                                "verse": self.current_verse_num,
-                                "text": text
-                            })
-                    self.current_verse_num = int(m.group(1))
-                    self.current_text = []
-                    self.in_verse_link = True
-
-    def handle_endtag(self, tag):
-        if tag == "a" and self.in_verse_link:
-            self.in_verse_link = False
-            self.capture_text = True
-
-    def handle_data(self, data):
-        if self.in_verse_link:
-            return  # Skip the verse number text inside the link
-        if self.capture_text and self.current_verse_num is not None:
-            text = data.strip()
-            if text and text != ".":
-                # Remove leading ". " from verse text
-                text = re.sub(r'^\.\s*', '', text)
-                if text:
-                    self.current_text.append(text)
-
-    def finalize(self):
-        """Call after feeding all data to capture the last verse."""
+    def _save_current_verse(self):
         if self.current_verse_num is not None and self.current_text:
             text = " ".join(self.current_text).strip()
             text = re.sub(r'\s+', ' ', text)
@@ -142,6 +103,60 @@ class VerseParser(HTMLParser):
                     "verse": self.current_verse_num,
                     "text": text
                 })
+
+    def handle_starttag(self, tag, attrs):
+        if self.done:
+            return
+        attrs_dict = dict(attrs)
+        # Verse links look like: <a href="verse.php?version=efo&book=...&verse=N">N</a>
+        if tag == "a" and "href" in attrs_dict:
+            href = attrs_dict["href"]
+            if "verse.php?" in href and "version=efo" in href:
+                m = re.search(r'verse=(\d+)', href)
+                if m:
+                    self._save_current_verse()
+                    self.current_verse_num = int(m.group(1))
+                    self.current_text = []
+                    self.in_verse_link = True
+            # Stop at next/prev chapter links
+            elif "chapter.php?" in href and self.current_verse_num is not None:
+                self._save_current_verse()
+                self.current_verse_num = None
+                self.capture_text = False
+                self.done = True
+        # Stop at navigation spans
+        if tag == "span" and attrs_dict.get("class", "") == "container-chapter__next-link":
+            self._save_current_verse()
+            self.current_verse_num = None
+            self.capture_text = False
+            self.done = True
+
+    def handle_endtag(self, tag):
+        if self.done:
+            return
+        if tag == "a" and self.in_verse_link:
+            self.in_verse_link = False
+            self.capture_text = True
+        # End of paragraph saves current verse text but keeps listening for more verses
+        if tag == "p" and self.current_verse_num is not None:
+            self._save_current_verse()
+            self.current_verse_num = None
+            self.current_text = []
+            self.capture_text = False
+
+    def handle_data(self, data):
+        if self.done or self.in_verse_link:
+            return
+        if self.capture_text and self.current_verse_num is not None:
+            text = data.strip()
+            if text and text != ".":
+                text = re.sub(r'^\.\s*', '', text)
+                if text:
+                    self.current_text.append(text)
+
+    def finalize(self):
+        """Call after feeding all data to capture the last verse."""
+        self._save_current_verse()
 
 
 def fetch_chapter(book_url, chapter):
